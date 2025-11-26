@@ -1,8 +1,26 @@
+# app.py (fixed editor compatibility)
 import streamlit as st
 import pandas as pd
 from io import BytesIO
 
 st.set_page_config(page_title="CAT Planner Dashboard", layout="wide")
+
+# --- compatibility helper: choose an available data-editor ---
+def get_data_editor():
+    """
+    Return a callable editor function and a flag indicating editable support.
+    Preference order:
+      1. st.data_editor (new/stable)
+      2. st.experimental_data_editor (older)
+    If neither found, return None (not editable).
+    """
+    if hasattr(st, "data_editor"):
+        return getattr(st, "data_editor"), True
+    if hasattr(st, "experimental_data_editor"):
+        return getattr(st, "experimental_data_editor"), True
+    return None, False
+
+data_editor_fn, has_editor = get_data_editor()
 
 # ---------------------
 # Helper: initial data
@@ -130,20 +148,59 @@ if st.sidebar.button("Unmark all studied"):
 # ---------------------
 st.title("📚 CAT Planner Dashboard")
 
+# show version + editor availability
+st.sidebar.markdown("---")
+st.sidebar.write(f"Streamlit version: {st.__version__}")
+st.sidebar.write(f"Table editor available: {'Yes' if has_editor else 'No — upgrade recommended'}")
+
+def render_editable(df, key, height=None):
+    """
+    Render df using the available editor. If no editor exists, show read-only table + CSV text area for quick edit.
+    """
+    if has_editor:
+        # try to call editor; most editors return edited df
+        try:
+            # use same params across different editors; many accept key & num_rows
+            edited = data_editor_fn(df, key=key)
+            return edited
+        except Exception as e:
+            st.warning(f"Editor call failed: {e}. Falling back to read-only view.")
+            st.write(df)
+            return df
+    else:
+        st.info("Your Streamlit version lacks an interactive data editor. To enable editing inline, upgrade Streamlit (eg. `pip install -U streamlit>=1.30.0`).")
+        st.write("Read-only view below. If you want to edit, copy CSV from the box, modify, and paste back.")
+        st.write(df)
+        csv = df.to_csv(index=False)
+        edited_csv = st.text_area(f"Edit CSV for {key} (paste back modified CSV to apply)", value=csv, height=150)
+        if st.button(f"Apply CSV to {key}"):
+            try:
+                new_df = pd.read_csv(pd.compat.StringIO(edited_csv))
+            except Exception:
+                # fallback parsing
+                from io import StringIO
+                try:
+                    new_df = pd.read_csv(StringIO(edited_csv))
+                except Exception as e:
+                    st.error(f"Failed to parse CSV: {e}")
+                    return df
+            return new_df
+        return df
+
 if page == "Syllabus":
     st.header("Syllabus — VARC / DILR / QA")
     col1, col2, col3 = st.columns([1,1,1])
     with col1:
         st.subheader("VARC")
-        edited_varc = st.experimental_data_editor(st.session_state.df_varc, key="varc_editor", num_rows="fixed")
+        edited_varc = render_editable(st.session_state.df_varc, key="varc_editor")
         st.session_state.df_varc = edited_varc
     with col2:
         st.subheader("DILR")
-        edited_dilr = st.experimental_data_editor(st.session_state.df_dilr, key="dilr_editor", num_rows="fixed")
+        edited_dilr = render_editable(st.session_state.df_dilr, key="dilr_editor")
         st.session_state.df_dilr = edited_dilr
     with col3:
         st.subheader("QA")
-        edited_qa = st.experimental_data_editor(st.session_state.df_qa, key="qa_editor", num_rows="fixed")
+        edited_qa = render_editable(st.session_state.df_qa, key="qa_editor")
         st.session_state.df_qa = edited_qa
 
     st.markdown("---")
@@ -151,13 +208,13 @@ if page == "Syllabus":
 
 elif page == "Difficulty":
     st.header("Difficulty Mapping")
-    edited_diff = st.experimental_data_editor(st.session_state.df_difficulty, key="diff_editor", num_rows="fixed")
+    edited_diff = render_editable(st.session_state.df_difficulty, key="diff_editor")
     st.session_state.df_difficulty = edited_diff
     st.markdown("You can change levels (Easy/Moderate/Hard) or mark studied status here.")
 
 elif page == "3-Month Plan":
     st.header("3-Month Study Plan (Weekly Targets)")
-    edited_plan = st.experimental_data_editor(st.session_state.df_plan, key="plan_editor", num_rows="fixed")
+    edited_plan = render_editable(st.session_state.df_plan, key="plan_editor")
     st.session_state.df_plan = edited_plan
 
     st.markdown("Use the Completed? checkbox to mark finished weeks. You can edit the 'Target' description if you customize the plan.")
@@ -168,8 +225,7 @@ elif page == "Tracker":
 
     col_a, col_b = st.columns([3,1])
     with col_a:
-        # editable tracker
-        tracker_editable = st.experimental_data_editor(st.session_state.df_tracker, key="tracker_editor")
+        tracker_editable = render_editable(st.session_state.df_tracker, key="tracker_editor")
         st.session_state.df_tracker = tracker_editable
     with col_b:
         st.write("")
@@ -205,9 +261,6 @@ elif page == "Export / Settings":
     sel = st.selectbox("Select sheet to download", cols)
     csv_bytes = dfs[sel].to_csv(index=False).encode("utf-8")
     st.download_button(f"⬇️ Download {sel}.csv", data=csv_bytes, file_name=f"{sel}.csv", mime="text/csv")
-
-    st.markdown("---")
-    st.write("Local persistence note: This app keeps changes in your browser session. To permanently store files, download them using the buttons above.")
 
 # Footer / quick stats
 st.markdown("---")
